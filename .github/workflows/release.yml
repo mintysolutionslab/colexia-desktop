@@ -44,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,6 +76,19 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # The GitHub Release body is this version's CHANGELOG.md section, the same
+      # notes the web /changelog page shows.
+      - name: Extract release notes
+        id: notes
+        shell: bash
+        env:
+          version: ${{ steps.version.outputs.version }}
+        run: |
+          notes=$(awk -v head="## [$version]" 'index($0, head) == 1 { found = 1; next } found && /^## \[/ { exit } found' CHANGELOG.md)
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then notes="Colexia desktop $version."; fi
+          notes=$(printf '%s\n\nDownload from https://colexia.app/download. Full history: https://colexia.app/changelog.' "$notes")
+          delim="NOTES_$(openssl rand -hex 8)"
+          { echo "notes<<$delim"; printf '%s\n' "$notes"; echo "$delim"; } >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -156,6 +170,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.prepare.outputs.version }}
+      NOTES: ${{ needs.prepare.outputs.notes }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -164,8 +179,9 @@ jobs:
       - name: Create the draft release
         run: |
           ls -la dist
+          printf '%s\n' "$NOTES" > notes.md
           gh release create "v$VERSION" dist/* --repo "${{ github.repository }}" --draft \
-            --title "Colexia $VERSION" --notes "Colexia desktop $VERSION. Download from https://colexia.app/download."
+            --title "Colexia $VERSION" --notes-file notes.md
       - name: Publish as the latest release
         if: ${{ env.PUBLISH == 'release' }}
         run: gh release edit "v$VERSION" --repo "${{ github.repository }}" --draft=false --latest
