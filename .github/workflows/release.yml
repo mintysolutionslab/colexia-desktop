@@ -77,7 +77,7 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       # The GitHub Release body is this version's CHANGELOG.md section, the same
-      # notes the web /changelog page shows.
+      # notes the web /whats-new page shows.
       - name: Extract release notes
         id: notes
         shell: bash
@@ -86,7 +86,7 @@ jobs:
         run: |
           notes=$(awk -v head="## [$version]" 'index($0, head) == 1 { found = 1; next } found && /^## \[/ { exit } found' CHANGELOG.md)
           if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then notes="Colexia desktop $version."; fi
-          notes=$(printf '%s\n\nDownload from https://colexia.app/download. Full history: https://colexia.app/changelog.' "$notes")
+          notes=$(printf '%s\n\nDownload from https://colexia.app/download. Full history: https://colexia.app/whats-new.' "$notes")
           delim="NOTES_$(openssl rand -hex 8)"
           { echo "notes<<$delim"; printf '%s\n' "$notes"; echo "$delim"; } >> "$GITHUB_OUTPUT"
 
