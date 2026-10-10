@@ -1,0 +1,159 @@
+# Colexia desktop release build.
+#
+# This file is the source for `.github/workflows/release.yml` in the PUBLIC repo
+# mintysolutionslab/colexia-desktop, where Actions minutes are free. It checks out
+# the private source (junrillg/colexia) with a read-only token, builds every
+# installer with `--publish never`, and only a separate job publishes them to this
+# public repo's Releases. See docs/desktop-local-first.md "S8 implementation".
+#
+# Triggers: manual (workflow_dispatch) or the private repo's tag dispatch
+# (repository_dispatch `desktop-release`). There are deliberately no push or
+# pull_request triggers.
+#
+# Secrets in the public repo:
+#   COLEXIA_SOURCE_TOKEN   fine-grained, read-only contents on junrillg/colexia (required)
+#   MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD, WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD (optional signing;
+#   absent = unsigned, and macOS is ad-hoc signed by the afterPack hook)
+name: Desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Ref of junrillg/colexia to build (a colexia-desktop-v<version> tag to publish)"
+        required: true
+        type: string
+      publish:
+        description: "none = build artifacts only; draft = draft release; release = published latest release"
+        required: true
+        default: none
+        type: choice
+        options: [none, draft, release]
+  repository_dispatch:
+    types: [desktop-release]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.client_payload.source_ref }}
+  PUBLISH: ${{ github.event.inputs.publish || github.event.client_payload.publish || 'none' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: junrillg/colexia
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.COLEXIA_SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # The desktop next build skips its own type check (heap), so the release
+      # keeps the gate here, on the larger Linux runner.
+      - name: Typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: pnpm typecheck
+      - name: Check publish mode and version
+        id: version
+        shell: bash
+        run: |
+          case "$PUBLISH" in none|draft|release) ;; *) echo "Unknown publish mode: $PUBLISH"; exit 1 ;; esac
+          version=$(node -p "require('./package.json').version")
+          if [ "$PUBLISH" != "none" ] && [ "$SOURCE_REF" != "colexia-desktop-v$version" ]; then
+            echo "Publishing requires source_ref colexia-desktop-v$version (package.json version); got $SOURCE_REF."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            args: --mac --arm64 --x64
+          - os: windows-latest
+            args: --win --x64
+          - os: ubuntu-22.04
+            args: --linux --x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: junrillg/colexia
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.COLEXIA_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      # One macOS job packages arm64 and x64, so install both architectures'
+      # optional native packages (sharp, @napi-rs/canvas). CI-only; not committed.
+      - name: Install both macOS architectures' native packages
+        if: runner.os == 'macOS'
+        run: node -e "const f='package.json',p=require('./'+f);p.pnpm={...p.pnpm,supportedArchitectures:{os:['current'],cpu:['arm64','x64']}};require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+
+      # The packaged server is Next's standalone output, which needs real (hoisted)
+      # node_modules rather than pnpm's symlinked store.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+
+      - name: Package
+        env:
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || runner.os == 'Windows' && secrets.WIN_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CSC_KEY_PASSWORD || runner.os == 'Windows' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          if [ -z "$CSC_LINK" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
+          pnpm desktop:package ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            dist-electron/Colexia-*
+            dist-electron/latest*.yml
+
+  publish:
+    needs: [prepare, build]
+    if: ${{ (github.event.inputs.publish || github.event.client_payload.publish || 'none') != 'none' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the draft release
+        run: |
+          ls -la dist
+          gh release create "v$VERSION" dist/* --repo "${{ github.repository }}" --draft \
+            --title "Colexia $VERSION" --notes "Colexia desktop $VERSION. Download from https://colexia.app/download."
+      - name: Publish as the latest release
+        if: ${{ env.PUBLISH == 'release' }}
+        run: gh release edit "v$VERSION" --repo "${{ github.repository }}" --draft=false --latest
