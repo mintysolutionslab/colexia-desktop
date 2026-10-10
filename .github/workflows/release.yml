@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: "Ref of junrillg/colexia to build (a colexia-desktop-v<version> tag to publish)"
+        description: "Ref of junrillg/colexia to build (a colexia-v<version> tag to publish)"
         required: true
         type: string
       publish:
@@ -70,8 +70,8 @@ jobs:
         run: |
           case "$PUBLISH" in none|draft|release) ;; *) echo "Unknown publish mode: $PUBLISH"; exit 1 ;; esac
           version=$(node -p "require('./package.json').version")
-          if [ "$PUBLISH" != "none" ] && [ "$SOURCE_REF" != "colexia-desktop-v$version" ]; then
-            echo "Publishing requires source_ref colexia-desktop-v$version (package.json version); got $SOURCE_REF."
+          if [ "$PUBLISH" != "none" ] && [ "$SOURCE_REF" != "colexia-v$version" ]; then
+            echo "Publishing requires source_ref colexia-v$version (package.json version); got $SOURCE_REF."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
