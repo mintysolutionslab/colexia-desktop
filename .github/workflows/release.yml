@@ -15,6 +15,7 @@
 #   MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD, WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD (optional signing;
 #   absent = unsigned, and macOS is ad-hoc signed by the afterPack hook)
 name: Desktop release
+run-name: Desktop release ${{ github.event.inputs.source_ref || github.event.client_payload.source_ref }} (${{ github.event.inputs.publish || github.event.client_payload.publish || 'none' }})
 
 on:
   workflow_dispatch:
