@@ -87,6 +87,7 @@ export async function prepareResources(projectDir, platform, arches, { prepare, 
             for (const action of ["--helper", "--speech", "--model"]) {
                 await prepareResource([action], { platform, arch, run(executable, argv) {
                     let args = argv;
+                    if (platform === "win32" && executable === "tar") args = ["--force-local", ...argv];
                     if (executable === "cmake" && argv[0] === "-S") {
                         if (platform === "darwin") args = [...argv, `-DCMAKE_OSX_ARCHITECTURES=${arch === "x64" ? "x86_64" : "arm64"}`];
                         if (platform === "win32") args = [...argv, "-DCMAKE_CXX_FLAGS_INIT=/DNOMINMAX"];
