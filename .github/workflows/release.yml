@@ -87,7 +87,7 @@ jobs:
         run: |
           notes=$(awk -v head="## [$version]" 'index($0, head) == 1 { found = 1; next } found && /^## \[/ { exit } found' CHANGELOG.md)
           if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then notes="Colexia desktop $version."; fi
-          notes=$(printf '%s\n\nDownload from https://colexia.app/download. Full history: https://colexia.app/whats-new.' "$notes")
+          notes=$(printf '%s\n\nCompatibility: macOS 14.2 or later. Linux x64 builds target Ubuntu 24.04; meeting capture requires PipeWire 0.3.65 or later.\n\nDownload from https://colexia.app/download. Full history: https://colexia.app/whats-new.' "$notes")
           delim="NOTES_$(openssl rand -hex 8)"
           { echo "notes<<$delim"; printf '%s\n' "$notes"; echo "$delim"; } >> "$GITHUB_OUTPUT"
 
@@ -101,7 +101,7 @@ jobs:
             args: --mac --arm64 --x64
           - os: windows-latest
             args: --win --x64
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             args: --linux --x64
     runs-on: ${{ matrix.os }}
     defaults:
@@ -132,6 +132,15 @@ jobs:
           node-version: "22"
           cache: "pnpm"
 
+      - name: Check out the pinned public build recipe
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .release-tools
+          persist-credentials: false
+          sparse-checkout: desktop/release
+
       # One macOS job packages arm64 and x64, so install both architectures'
       # optional native packages (sharp, @napi-rs/canvas). CI-only; not committed.
       - name: Install both macOS architectures' native packages
@@ -143,6 +152,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.node-linker=hoisted
 
+      - name: Install Linux native capture prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpipewire-0.3-dev
+          pkg-config --atleast-version=0.3.65 libpipewire-0.3
+
       - name: Package
         env:
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || runner.os == 'Windows' && secrets.WIN_CSC_LINK || '' }}
@@ -152,7 +168,7 @@ jobs:
           NODE_OPTIONS: ${{ runner.os == 'macOS' && '--max-old-space-size=5632' || '--max-old-space-size=8192' }}
         run: |
           if [ -z "$CSC_LINK" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
-          pnpm desktop:package ${{ matrix.args }}
+          node .release-tools/desktop/release/package-desktop.mjs ${{ matrix.args }}
 
       - uses: actions/upload-artifact@v4
         with:
