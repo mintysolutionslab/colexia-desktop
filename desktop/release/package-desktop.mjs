@@ -1,9 +1,15 @@
 // Public release assembly; application code is always loaded from the frozen checkout.
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+const legacyCaptureHash = "e7b82ee6870392f6839c86153164f6219684af6a97502981dfbdb6bed97fd9cc";
+const qualifiedCaptureHash = "2f2b790efaee5451bbe0740a010febe68846ae3b06a37af73e79e480e8d50180";
+const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 
 function owned(root, file) {
     const resolved = realpathSync(file);
@@ -64,14 +70,35 @@ export function stageCanvas(projectDir, platform, arches) {
  */
 export async function prepareResources(projectDir, platform, arches, { prepare, run = execFileSync } = {}) {
     const prepareResource = prepare ?? (await import(pathToFileURL(join(projectDir, "scripts", "prepare-meeting-native.mjs")).href)).prepare;
-    for (const arch of arches) {
-        for (const action of ["--helper", "--speech", "--model"]) {
-            await prepareResource([action], { platform, arch, run(executable, argv) {
-                const args = executable === "cmake" && argv[0] === "-S" && platform === "darwin" ? [...argv, `-DCMAKE_OSX_ARCHITECTURES=${arch === "x64" ? "x86_64" : "arm64"}`] : argv;
-                return run(executable, args, { stdio: "inherit", timeout: 600_000 });
-            } });
+    let scratch;
+    try {
+        if (platform === "linux" || platform === "win32") {
+            const original = readFileSync(join(projectDir, "desktop/native/shared/CaptureProtocol.hpp"));
+            if (digest(original) === legacyCaptureHash) {
+                scratch = mkdtempSync(join(tmpdir(), "colexia-capture-overlay-"));
+                cpSync(join(projectDir, "desktop/native"), join(scratch, "native"), { recursive: true });
+                const header = join(scratch, "native/shared/CaptureProtocol.hpp");
+                writeFileSync(header, original.toString("utf8").replaceAll(" + quoted(", " + colexia::quoted("));
+                if (digest(readFileSync(header)) !== qualifiedCaptureHash) throw new Error("Pinned capture header overlay checksum mismatch.");
+                console.log(JSON.stringify({ nativeCaptureOverlay: { baseSha256: legacyCaptureHash, compiledSha256: qualifiedCaptureHash, recipeSha: /^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA) ? process.env.GITHUB_SHA : "local" } }));
+            }
         }
-    }
+        for (const arch of arches) {
+            for (const action of ["--helper", "--speech", "--model"]) {
+                await prepareResource([action], { platform, arch, run(executable, argv) {
+                    let args = argv;
+                    if (executable === "cmake" && argv[0] === "-S") {
+                        if (platform === "darwin") args = [...argv, `-DCMAKE_OSX_ARCHITECTURES=${arch === "x64" ? "x86_64" : "arm64"}`];
+                        if (platform === "win32") args = [...argv, "-DCMAKE_CXX_FLAGS_INIT=/DNOMINMAX"];
+                        if (scratch && action === "--helper" && argv[1] === join(projectDir, "desktop/native", platform === "win32" ? "windows" : "linux")) {
+                            args = [...args]; args[1] = join(scratch, "native", platform === "win32" ? "windows" : "linux");
+                        }
+                    }
+                    return run(executable, args, { stdio: "inherit", timeout: 600_000 });
+                } });
+            }
+        }
+    } finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
 }
 
 /**
@@ -91,6 +118,8 @@ export async function packageDesktop(args, { projectDir = process.cwd(), platfor
             stageCanvas(projectDir, platform, arches);
             const smoke = run(process.execPath, ["-e", "require('@napi-rs/canvas').createCanvas(1, 1)"], { ...options, cwd: join(projectDir, ".next", "standalone") });
             if (smoke.status !== 0) throw new Error("Staged canvas failed its native runtime check.");
+            // The frozen afterPack hook already ad-hoc signs unsigned macOS bundles.
+            if (platform === "darwin" && !options.env.CSC_LINK) commandArgs = [...commandArgs, "--config.mac.identity=null"];
             if (platform === "linux") {
                 const depends = JSON.parse(readFileSync(join(projectDir, "package.json"), "utf8")).build?.deb?.depends;
                 if (!Array.isArray(depends) || !depends.length || depends.some(value => typeof value !== "string" || !value.trim())) throw new Error("Frozen Debian dependencies must be a nonempty string array.");

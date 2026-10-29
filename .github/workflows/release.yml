@@ -88,6 +88,10 @@ jobs:
           notes=$(awk -v head="## [$version]" 'index($0, head) == 1 { found = 1; next } found && /^## \[/ { exit } found' CHANGELOG.md)
           if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then notes="Colexia desktop $version."; fi
           notes=$(printf '%s\n\nCompatibility: macOS 14.2 or later. Linux x64 builds target Ubuntu 24.04; meeting capture requires PipeWire 0.3.65 or later.\n\nDownload from https://colexia.app/download. Full history: https://colexia.app/whats-new.' "$notes")
+          notes=$(printf '%s\n\nBuild provenance: application %s; public build recipe %s. Windows compilation defines NOMINMAX.' "$notes" "$SOURCE_REF" "$GITHUB_SHA")
+          if [ "$(sha256sum desktop/native/shared/CaptureProtocol.hpp | cut -d' ' -f1)" = "e7b82ee6870392f6839c86153164f6219684af6a97502981dfbdb6bed97fd9cc" ]; then
+            notes=$(printf '%s\n\nLinux/Windows capture uses a copied header with qualified JSON quoting: base SHA256 e7b82ee6870392f6839c86153164f6219684af6a97502981dfbdb6bed97fd9cc; compiled SHA256 2f2b790efaee5451bbe0740a010febe68846ae3b06a37af73e79e480e8d50180. The frozen application checkout and source tag are unchanged.' "$notes")
+          fi
           delim="NOTES_$(openssl rand -hex 8)"
           { echo "notes<<$delim"; printf '%s\n' "$notes"; echo "$delim"; } >> "$GITHUB_OUTPUT"
 
@@ -111,7 +115,9 @@ jobs:
       # Windows: some committed screenshot paths exceed 260 characters.
       - name: Allow long paths on Windows
         if: runner.os == 'Windows'
-        run: git config --system core.longpaths true
+        run: |
+          git config --system core.longpaths true
+          git config --global core.autocrlf false
 
       # docs/ (screenshots, recordings) is not needed to package the app.
       - uses: actions/checkout@v4
